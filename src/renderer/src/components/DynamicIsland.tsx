@@ -1,0 +1,486 @@
+import React, { useState, useEffect, useRef } from "react";
+
+interface DynamicIslandProps {
+  onNewChat: () => void;
+  onShowSettings: () => void;
+  onShowHistory: () => void;
+  onClose: () => void;
+  isPageVisible: boolean;
+}
+
+// ── TTS helpers (mirrored from ChatPage) ─────────────────────
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, " code block ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/[*_~#>\[\]]/g, "")
+    .replace(/\n+/g, " ")
+    .trim();
+}
+
+const DynamicIsland: React.FC<DynamicIslandProps> = ({
+  onNewChat,
+  onShowSettings,
+  onShowHistory,
+  onClose,
+  isPageVisible,
+}) => {
+  const [isHovered, setIsHovered] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
+
+  // ── Headless voice state ─────────────────────────────────────
+  const [isIslandRecording, setIsIslandRecording] = useState(false);
+  const [isIslandThinking, setIsIslandThinking] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  // ── Menu toggle ──────────────────────────────────────────────
+  const toggleMenu = async (newMenuState?: boolean) => {
+    const nextState = newMenuState !== undefined ? newMenuState : !showMenu;
+    setShowMenu(nextState);
+
+    // Resize window to accommodate menu
+    if (window.electronAPI && !isPageVisible) {
+      await window.electronAPI.resizeWindowForMenu(nextState);
+    }
+  };
+
+  // ── Stop TTS audio ───────────────────────────────────────────
+  const stopAudio = () => {
+    window.speechSynthesis.cancel();
+    setIsSpeaking(false);
+  };
+
+  // ── Headless voice command toggle ────────────────────────────
+  const toggleIslandVoice = async () => {
+    // Stop any currently playing audio
+    stopAudio();
+
+    if (isIslandRecording) {
+      // ── STOP RECORDING & PROCESS ────────────────────────────
+      if (mediaRecorderRef.current) {
+        mediaRecorderRef.current.stop();
+      }
+      setIsIslandRecording(false);
+      setIsIslandThinking(true);
+    } else {
+      // ── START RECORDING ─────────────────────────────────────
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        streamRef.current = stream;
+        const mediaRecorder = new MediaRecorder(stream);
+        mediaRecorderRef.current = mediaRecorder;
+        audioChunksRef.current = [];
+
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) audioChunksRef.current.push(e.data);
+        };
+
+        mediaRecorder.onstop = async () => {
+          const audioBlob = new Blob(audioChunksRef.current, { type: "audio/wav" });
+
+          try {
+            // 1. Send to Sarvam STT
+            const formData = new FormData();
+            formData.append("file", audioBlob, "voice.wav");
+            formData.append("model", "saaras:v3");
+            formData.append("mode", "translate");
+
+            const sarvamRes = await fetch("https://api.sarvam.ai/speech-to-text-translate", {
+              method: "POST",
+              headers: {
+                "api-subscription-key": "sk_t7ok8eum_YZESvEqtx6staTJ45Yze3dJP",
+              },
+              body: formData,
+            });
+
+            if (!sarvamRes.ok) throw new Error("Sarvam STT failed");
+            const sarvamData = await sarvamRes.json();
+            const transcript = sarvamData.transcript || sarvamData.text || "";
+
+            if (transcript) {
+              // 2. Send transcript to Groq AI (headless — no ChatPage)
+              const requestId = "island_" + Math.random().toString(36).slice(2);
+
+              // Subscribe to stream end → speak the response
+              const endUnsub = window.electronAPI.onAIStreamEnd(
+                (_: any, data: { requestId: string; finalText: string }) => {
+                  if (data.requestId !== requestId) return;
+                  setIsIslandThinking(false);
+
+                  if (data.finalText) {
+                    setIsSpeaking(true);
+                    const cleaned = stripMarkdown(data.finalText);
+                    if (cleaned) {
+                      const utterance = new SpeechSynthesisUtterance(cleaned);
+                      // Pick a nice English voice
+                      const voices = window.speechSynthesis.getVoices();
+                      const preferred =
+                        voices.find(
+                          (v) =>
+                            v.lang.startsWith("en") &&
+                            (v.name.toLowerCase().includes("zira") ||
+                              v.name.toLowerCase().includes("samantha") ||
+                              v.name.toLowerCase().includes("female"))
+                        ) ||
+                        voices.find((v) => v.lang.startsWith("en")) ||
+                        voices[0];
+                      if (preferred) utterance.voice = preferred;
+                      utterance.rate = 1.0;
+                      utterance.pitch = 1.0;
+                      utterance.volume = 1.0;
+                      utterance.onend = () => setIsSpeaking(false);
+                      window.speechSynthesis.speak(utterance);
+                    } else {
+                      setIsSpeaking(false);
+                    }
+                  }
+
+                  endUnsub();
+                  errUnsub();
+                }
+              );
+
+              // Subscribe to stream error
+              const errUnsub = window.electronAPI.onAIStreamError(
+                (_: any, data: { requestId: string; error: string }) => {
+                  if (data.requestId !== requestId) return;
+                  console.error("Island voice AI error:", data.error);
+                  setIsIslandThinking(false);
+                  endUnsub();
+                  errUnsub();
+                }
+              );
+
+              // 3. Fire the AI request with empty history (one-off command)
+              await window.electronAPI.invokeAIStream(requestId, transcript, []);
+            } else {
+              setIsIslandThinking(false);
+            }
+          } catch (error) {
+            console.error("Island voice command failed:", error);
+            setIsIslandThinking(false);
+          } finally {
+            // Release microphone hardware
+            if (streamRef.current) {
+              streamRef.current.getTracks().forEach((track) => track.stop());
+              streamRef.current = null;
+            }
+          }
+        };
+
+        mediaRecorder.start();
+        setIsIslandRecording(true);
+      } catch (err) {
+        console.error("Mic access denied:", err);
+      }
+    }
+  };
+
+  // ── Keyboard shortcuts ───────────────────────────────────────
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Close any open page with Escape
+      if (e.key === "Escape") {
+        if (isPageVisible) {
+          onClose();
+        } else {
+          toggleMenu(false);
+        }
+      }
+      // Toggle menu with Ctrl+M
+      if (e.ctrlKey && e.key === "m") {
+        e.preventDefault();
+        toggleMenu();
+      }
+      // New chat with Ctrl+N
+      if (e.ctrlKey && e.key === "n") {
+        e.preventDefault();
+        // Simulate clicking the pencil: close menu, then call onNewChat
+        toggleMenu(false);
+        setTimeout(() => {
+          onNewChat();
+        }, 50);
+      }
+      // Quick access to history with Ctrl+H
+      if (e.ctrlKey && e.key === "h") {
+        e.preventDefault();
+        onShowHistory();
+        toggleMenu(false);
+      }
+      // Quick access to settings with Ctrl+,
+      if (e.ctrlKey && e.key === ",") {
+        e.preventDefault();
+        onShowSettings();
+        toggleMenu(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [
+    isPageVisible,
+    onClose,
+    onNewChat,
+    onShowHistory,
+    onShowSettings,
+    toggleMenu,
+  ]);
+
+  // ── Determine status dot color ───────────────────────────────
+  const dotClass = isIslandRecording
+    ? "bg-red-500 animate-pulse"
+    : isIslandThinking
+      ? "bg-blue-500 animate-pulse"
+      : isSpeaking
+        ? "bg-green-400 animate-pulse"
+        : isPageVisible
+          ? "bg-white/80 animate-pulse"
+          : "bg-white/50 animate-pulse";
+
+  return (
+    <div className="fixed top-2 left-1/2 transform -translate-x-1/2 z-50">
+      {/* Main Dynamic Island */}
+      <div
+        className={`relative backdrop-blur-xl border overflow-hidden ${isHovered || showMenu ? "rounded-2xl" : "rounded-full"
+          } ${isPageVisible
+            ? "bg-black/80 border-white/20 shadow-lg shadow-white/10"
+            : "bg-black/70 border-white/20"
+          }`}
+        style={{
+          width: isHovered || showMenu ? 320 : 160,
+          padding: isHovered || showMenu ? "12px 24px" : "8px 16px",
+          transition:
+            "width 220ms ease, padding 220ms ease, border-color 220ms ease, box-shadow 220ms ease, background-color 220ms ease",
+        }}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+      >
+        {/* Core Content */}
+        <div className="flex items-center justify-between">
+          {/* Velocity Branding with Status Indicator */}
+          <div className="flex items-center space-x-2">
+            <div
+              className={`w-2 h-2 rounded-full transition-all duration-300 ${dotClass}`}
+            ></div>
+            <span className="text-white font-semibold text-sm transition-colors duration-300">
+              Velocity
+            </span>
+          </div>
+
+          {/* Action Buttons */}
+          <div
+            className={`flex items-center space-x-1.5 transition-opacity duration-300 ${isHovered || showMenu ? "opacity-100" : "opacity-70"
+              }`}
+          >
+            {/* Voice Command Button */}
+            <button
+              onClick={toggleIslandVoice}
+              disabled={isIslandThinking}
+              className={`p-1.5 rounded-full transition-all duration-200 group ${isIslandRecording
+                ? "bg-red-500 text-white shadow-lg shadow-red-500/30 scale-110 animate-pulse"
+                : isIslandThinking
+                  ? "bg-blue-500/50 text-white/50 cursor-wait"
+                  : "bg-white/10 hover:bg-white/20"
+                }`}
+              title={
+                isIslandRecording
+                  ? "Stop Recording"
+                  : isIslandThinking
+                    ? "Processing..."
+                    : "Speak to Velocity"
+              }
+            >
+              {isIslandRecording ? (
+                /* Square stop icon */
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="currentColor"
+                  viewBox="0 0 24 24"
+                  className="w-3.5 h-3.5 text-white"
+                >
+                  <rect x="6" y="6" width="12" height="12" rx="2" />
+                </svg>
+              ) : (
+                /* Microphone icon */
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                  stroke="currentColor"
+                  className="w-3.5 h-3.5 text-white group-hover:text-blue-300 transition-colors"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z"
+                  />
+                </svg>
+              )}
+            </button>
+
+            {/* Stop Audio Button (visible only when AI is speaking) */}
+            {isSpeaking && (
+              <button
+                onClick={stopAudio}
+                className="p-1.5 rounded-full bg-yellow-600 hover:bg-yellow-500 text-white transition-all duration-200"
+                title="Stop Audio"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                  stroke="currentColor"
+                  className="w-3.5 h-3.5"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M17.25 9.75L19.5 12m0 0l2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6l4.72-4.72a.75.75 0 011.28.531V19.94a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.506-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z"
+                  />
+                </svg>
+              </button>
+            )}
+
+            {/* New Chat Button */}
+            <button
+              onClick={async () => {
+                if (showMenu) {
+                  await toggleMenu(false);
+                  setTimeout(() => {
+                    onNewChat();
+                  }, 100);
+                } else {
+                  onNewChat();
+                }
+              }}
+              className="p-1.5 rounded-full bg-white/10 hover:bg-white/20 transition-all duration-200 group"
+              title="New Chat (Ctrl+N)"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                strokeWidth={2}
+                stroke="currentColor"
+                className="w-3.5 h-3.5 text-white group-hover:text-blue-300 transition-colors"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L6.832 19.82a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 011.13-1.897L16.863 4.487zm0 0L19.5 7.125"
+                />
+              </svg>
+            </button>
+
+            {/* Menu button */}
+            <button
+              onClick={() => toggleMenu()}
+              className="p-1.5 rounded-full bg-white/10 hover:bg-white/20 transition-all duration-200 group"
+              title={showMenu ? "Close Menu" : "Menu (Ctrl+M)"}
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                strokeWidth={2}
+                stroke="currentColor"
+                className={`w-3.5 h-3.5 text-white transition-all duration-200 ${showMenu ? "rotate-180" : ""
+                  }`}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 6.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 12.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 18.75a.75.75 0 110-1.5.75.75 0 010 1.5z"
+                />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        {/* Expanded Menu */}
+        {showMenu && (
+          <div className="mt-3 pt-3 border-t border-white/10 animate-fade-in-up">
+            <div className="flex flex-col space-y-2">
+              <button
+                onClick={() => {
+                  console.log("History button clicked");
+                  setTimeout(() => {
+                    onShowHistory();
+                  }, 100);
+                  toggleMenu(false);
+                }}
+                className="flex items-center space-x-2 px-2 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 transition-colors text-left"
+                title="History (Ctrl+H)"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={1.5}
+                  stroke="currentColor"
+                  className="w-4 h-4 text-gray-300"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                <span className="text-sm text-gray-200">History</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  console.log("Settings button clicked");
+                  setTimeout(() => {
+                    onShowSettings();
+                  }, 100);
+                  toggleMenu(false);
+                }}
+                className="flex items-center space-x-2 px-2 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 transition-colors text-left"
+                title="Settings (Ctrl+,)"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={1.5}
+                  stroke="currentColor"
+                  className="w-4 h-4 text-gray-300"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z"
+                  />
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                  />
+                </svg>
+                <span className="text-sm text-gray-200">Settings</span>
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Keyboard Shortcuts Hint */}
+      <div
+        className={`mt-2 text-xs text-white/50 text-center transition-opacity duration-300 ${showMenu && !isPageVisible ? "opacity-100" : "opacity-0"
+          }`}
+      >
+        Ctrl+N: Chat • Ctrl+H: History • Ctrl+,: Settings • Esc: Close
+      </div>
+    </div>
+  );
+};
+
+export default React.memo(DynamicIsland);
