@@ -31,23 +31,23 @@ open -a "Calendar"
 # Show a popup after a delay (e.g., 5 minutes = 300 seconds)
 $delay = 300  # seconds
 Start-Sleep -Seconds $delay
-[System.Windows.MessageBox]::Show("Reminder: YOUR_MESSAGE", "Nexus Reminder")
+[System.Windows.MessageBox]::Show("Reminder: YOUR_MESSAGE", "Velocity Reminder")
 ```
 
 **Background version (non-blocking):**
 ```powershell
 $msg = "YOUR_MESSAGE"
 $delay = 300
-Start-Process powershell -ArgumentList "-Command Start-Sleep $delay; [System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms'); [System.Windows.Forms.MessageBox]::Show('$msg','Nexus Reminder')" -WindowStyle Hidden
+Start-Process powershell -ArgumentList "-Command Start-Sleep $delay; [System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms'); [System.Windows.Forms.MessageBox]::Show('$msg','Velocity Reminder')" -WindowStyle Hidden
 ```
 
 ### macOS (via osascript + at command)
 ```bash
 # Display notification immediately
-osascript -e 'display notification "YOUR_MESSAGE" with title "Nexus Reminder"'
+osascript -e 'display notification "YOUR_MESSAGE" with title "Velocity Reminder"'
 
 # Schedule for N minutes from now
-echo "osascript -e 'display notification \"YOUR_MESSAGE\" with title \"Nexus Reminder\"'" | at now + 5 minutes
+echo "osascript -e 'display notification \"YOUR_MESSAGE\" with title \"Velocity Reminder\"'" | at now + 5 minutes
 ```
 
 ---
@@ -82,7 +82,7 @@ launchctl list | head -20
 ```
 Platform: darwin
 Command:
-  echo "osascript -e 'display notification \"Time to take a break!\" with title \"Nexus Reminder\"'" | at now + 10 minutes
+  echo "osascript -e 'display notification \"Time to take a break!\" with title \"Velocity Reminder\"'" | at now + 10 minutes
 Report: "Done! I've set a reminder for 10 minutes from now to take a break."
 Note: "This reminder will only fire if your Mac stays on."
 ```

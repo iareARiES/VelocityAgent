@@ -67,7 +67,7 @@ $code = @"
 for i in range(5):
     print(i)
 "@
-$tmpFile = "${systemPaths.temp}\nexus_run_$(Get-Random).py"
+$tmpFile = "${systemPaths.temp}\velocity_run_$(Get-Random).py"
 $code | Set-Content $tmpFile
 python $tmpFile
 Remove-Item $tmpFile
@@ -75,7 +75,7 @@ Remove-Item $tmpFile
 
 ```bash
 # macOS — write and run Python
-tmpfile=$(mktemp /tmp/nexus_run_XXXXX.py)
+tmpfile=$(mktemp /tmp/velocity_run_XXXXX.py)
 cat > "$tmpfile" << 'EOF'
 # user's code here
 for i in range(5):

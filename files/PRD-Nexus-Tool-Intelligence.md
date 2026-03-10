@@ -1,4 +1,4 @@
-# PRD: Nexus AI — Tool-Calling Intelligence & Action Execution System
+# PRD: Velocity Agent — Tool-Calling Intelligence & Action Execution System
 
 **Version:** 1.0  
 **Date:** 2026-02-24  
@@ -10,9 +10,9 @@
 
 ## 1. Executive Summary
 
-Nexus AI currently supports three tools: `execute_terminal_command`, `take_screenshot`, and `web_search`. However, the model **hallucinates** when deciding how and when to use them — it invents file paths, fails to locate OS-specific directories like the Desktop, and mismatches tools to user intents.
+Velocity Agent currently supports three tools: `execute_terminal_command`, `take_screenshot`, and `web_search`. However, the model **hallucinates** when deciding how and when to use them — it invents file paths, fails to locate OS-specific directories like the Desktop, and mismatches tools to user intents.
 
-This PRD defines the full upgrade to make Nexus AI's tool-calling **reliable, precise, and contextually aware**. The solution has three pillars:
+This PRD defines the full upgrade to make Velocity Agent's tool-calling **reliable, precise, and contextually aware**. The solution has three pillars:
 
 1. **Intent Classification Layer** — parse user intent into structured action types before any tool call
 2. **Path Resolution System** — dynamically resolve real OS paths (Desktop, Downloads, Documents, etc.) before executing filesystem operations
@@ -123,7 +123,7 @@ In `src/main/prompt.ts`, `createSystemPrompt()` must accept a `systemPaths` argu
 ```typescript
 export function createSystemPrompt(userDescription: string, systemPaths: SystemPaths): string {
   return `
-You are Nexus Access, an intelligent desktop assistant running on this computer.
+You are Velocity Agent, an intelligent desktop assistant running on this computer.
 
 ## REAL SYSTEM PATHS (use these exactly — do not invent paths)
 - Desktop:   ${systemPaths.desktop}

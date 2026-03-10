@@ -16,7 +16,7 @@ export function createMainWindow() {
     resizable: true,
     vibrancy: "under-window",
     focusable: false,
-    icon: path.join(__dirname, "../../resources/nexus-icon.png"),
+    icon: path.join(__dirname, "../../resources/velocity-icon.png"),
     webPreferences: {
       preload: preloadScriptPath,
       contextIsolation: true,
